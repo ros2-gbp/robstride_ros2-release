@@ -1,0 +1,18 @@
+ros-rolling-robstride-driver (0.1.1-1trixie) trixie; urgency=high
+
+  * Synchronize the package version for the multi-package compatibility release.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Mon, 24 Aug 2026 15:00:00 -0000
+
+ros-rolling-robstride-driver (0.1.0-1trixie) trixie; urgency=high
+
+  * Add the RobStride private-CAN protocol, topic transport, motor lifecycle,
+    feedback monitoring, and Run-mode recovery library.
+  * Clamp position, velocity, and effort commands to per-joint operational
+    limits before CAN encoding.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Sat, 08 Aug 2026 15:00:00 -0000
+
+
