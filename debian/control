@@ -1,0 +1,12 @@
+Source: ros-jazzy-robstride-ros2-control
+Section: misc
+Priority: optional
+Maintainer: "yamato" <ykturtler@outlook.com>
+Build-Depends: debhelper (>= 9.0.0), ros-jazzy-ament-cmake, ros-jazzy-ament-cmake-gtest <!nocheck>, ros-jazzy-hardware-interface, ros-jazzy-pluginlib, ros-jazzy-rclcpp, ros-jazzy-rclcpp-lifecycle, ros-jazzy-robstride-driver, ros-jazzy-ros-workspace
+Homepage: https://github.com/s2015-turtle/robstride_ros2
+Standards-Version: 3.9.2
+
+Package: ros-jazzy-robstride-ros2-control
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-jazzy-hardware-interface, ros-jazzy-pluginlib, ros-jazzy-rclcpp, ros-jazzy-rclcpp-lifecycle, ros-jazzy-robstride-driver, ros-jazzy-ros-workspace
+Description: ros2_control hardware component for RobStride CAN actuators.
