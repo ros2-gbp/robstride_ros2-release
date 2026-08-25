@@ -1,3 +1,4 @@
+release_repo_url: https://github.com/ros2-gbp/robstride_ros2-release.git
 tracks:
   humble:
     actions:
