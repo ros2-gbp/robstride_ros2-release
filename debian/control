@@ -1,0 +1,12 @@
+Source: ros-jazzy-robstride-driver
+Section: misc
+Priority: optional
+Maintainer: "yamato" <ykturtler@outlook.com>
+Build-Depends: debhelper (>= 9.0.0), ros-jazzy-ament-cmake, ros-jazzy-ament-cmake-gtest <!nocheck>, ros-jazzy-can-msgs, ros-jazzy-rclcpp, ros-jazzy-ros-workspace
+Homepage: https://github.com/s2015-turtle/robstride_ros2
+Standards-Version: 3.9.2
+
+Package: ros-jazzy-robstride-driver
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-jazzy-can-msgs, ros-jazzy-rclcpp, ros-jazzy-ros-workspace
+Description: Protocol, CAN transport, and motor driver library for RobStride actuators.
