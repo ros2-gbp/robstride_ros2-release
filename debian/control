@@ -1,0 +1,12 @@
+Source: ros-kilted-robstride-examples
+Section: misc
+Priority: optional
+Maintainer: "yamato" <ykturtler@outlook.com>
+Build-Depends: debhelper (>= 9.0.0), ros-kilted-ament-cmake, ros-kilted-ament-cmake-pytest <!nocheck>, ros-kilted-ros-workspace
+Homepage: https://github.com/s2015-turtle/robstride_ros2
+Standards-Version: 3.9.2
+
+Package: ros-kilted-robstride-examples
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-kilted-ament-index-python, ros-kilted-controller-manager, ros-kilted-forward-command-controller, ros-kilted-joint-state-broadcaster, ros-kilted-launch, ros-kilted-launch-ros, ros-kilted-robot-state-publisher, ros-kilted-robstride-ros2-control, ros-kilted-ros2-socketcan, ros-kilted-xacro, ros-kilted-ros-workspace
+Description: Ready-to-use Xacro profiles, ros2_control configuration, and launch examples for RobStride actuators.
