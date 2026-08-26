@@ -1,0 +1,12 @@
+Source: ros-lyrical-robstride-driver
+Section: misc
+Priority: optional
+Maintainer: "yamato" <ykturtler@outlook.com>
+Build-Depends: debhelper (>= 9.0.0), ros-lyrical-ament-cmake, ros-lyrical-ament-cmake-gtest <!nocheck>, ros-lyrical-can-msgs, ros-lyrical-rclcpp, ros-lyrical-ros-workspace
+Homepage: https://github.com/s2015-turtle/robstride_ros2
+Standards-Version: 3.9.2
+
+Package: ros-lyrical-robstride-driver
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-lyrical-can-msgs, ros-lyrical-rclcpp, ros-lyrical-ros-workspace
+Description: RobStride private-CAN protocol, topic transport, motor lifecycle, and feedback library.
