@@ -1,3 +1,30 @@
+## robstride_ros2 (rolling) - 0.1.2-1
+
+The packages in the `robstride_ros2` repository were released into the `rolling` distro by running `/tmp/robstride-bloom-venv/bin/bloom-release --rosdistro rolling --track rolling --non-interactive --no-web --no-pull-request robstride_ros2` on `Wed, 26 Aug 2026 14:34:34 -0000`
+
+These packages were released:
+- `robstride_driver`
+- `robstride_examples`
+- `robstride_ros2`
+- `robstride_ros2_control`
+
+Version of package(s) in repository `robstride_ros2`:
+
+- upstream repository: https://github.com/s2015-turtle/robstride_ros2.git
+- release repository: https://github.com/ros2-gbp/robstride_ros2-release.git
+- rosdistro version: `0.1.1-1`
+- old version: `0.1.1-1`
+- new version: `0.1.2-1`
+
+Versions of tools used:
+
+- bloom version: `0.14.3`
+- catkin_pkg version: `1.1.0`
+- rosdep version: `0.26.0`
+- rosdistro version: `1.0.1`
+- vcstools version: `0.1.42`
+
+
 ## robstride_ros2 (lyrical) - 0.1.2-1
 
 The packages in the `robstride_ros2` repository were released into the `lyrical` distro by running `/tmp/robstride-bloom-venv/bin/bloom-release --rosdistro lyrical --track lyrical --non-interactive --no-web --no-pull-request robstride_ros2` on `Wed, 26 Aug 2026 14:30:33 -0000`
