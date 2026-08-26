@@ -1,0 +1,12 @@
+Source: ros-rolling-robstride-ros2
+Section: misc
+Priority: optional
+Maintainer: "yamato" <ykturtler@outlook.com>
+Build-Depends: debhelper (>= 9.0.0), ros-rolling-ament-cmake, ros-rolling-ros-workspace
+Homepage: https://github.com/s2015-turtle/robstride_ros2
+Standards-Version: 3.9.2
+
+Package: ros-rolling-robstride-ros2
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, ros-rolling-robstride-driver, ros-rolling-robstride-examples, ros-rolling-robstride-ros2-control, ros-rolling-ros-workspace
+Description: Aggregate installation package for the RobStride driver, ros2_control component, and examples.
