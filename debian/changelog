@@ -1,0 +1,30 @@
+ros-rolling-robstride-ros2-control (0.1.2-1trixie) trixie; urgency=high
+
+  * Derive default ROS joint effort limits from motor limits through
+    ``gear_ratio`` and ``direction``.
+  * Validate explicit joint effort limits after converting them back to motor
+    clamp and CAN encoding coordinates.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Tue, 25 Aug 2026 15:00:00 -0000
+
+ros-rolling-robstride-ros2-control (0.1.1-1trixie) trixie; urgency=high
+
+  * Synchronize the package version for the multi-package compatibility release.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Mon, 24 Aug 2026 15:00:00 -0000
+
+ros-rolling-robstride-ros2-control (0.1.0-1trixie) trixie; urgency=high
+
+  * Add a ros2_control SystemInterface adapter backed by ``robstride_driver``.
+  * Support position, velocity, and effort command-mode switching per joint.
+  * Parse and validate optional ROS joint-coordinate command limits separately
+    from the CAN encoding ranges.
+  * Reject non-finite joint values, invalid watchdog values, and blank CAN topic
+    names during hardware configuration.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Sat, 08 Aug 2026 15:00:00 -0000
+
+
