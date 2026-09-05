@@ -9,7 +9,7 @@ This project is not affiliated with or endorsed by RobStride. The protocol and
 model profiles were checked against the English manuals in RobStride's official
 [`Product_Information`](https://github.com/RobStride/Product_Information)
 repository. A Japanese README is available as
-[`README.ja.md`](README.ja.md).
+[`doc/README.ja.md`](doc/README.ja.md).
 
 ## Features
 
@@ -20,7 +20,9 @@ repository. A Japanese README is available as
 - Motor feedback for position, velocity, torque, temperature, and faults
 - Startup parameter readback and motor-enable confirmation
 - Feedback timeout handling and repeated stop commands during shutdown
+- Persistent transmit failure propagation to the `ros2_control` lifecycle
 - A nonzero motor-side CAN watchdog configured on every activation
+- CAN traffic, command-coalescing, and per-motor feedback diagnostics
 
 ## Package structure
 
@@ -30,7 +32,7 @@ The repository contains four ROS 2 packages:
 |---|---|
 | `robstride_driver` | Private protocol and `can_msgs` topic transport |
 | `robstride_ros2_control` | `ros2_control` Hardware Component |
-| `robstride_examples` | Motor-profile Xacro, controller configuration, and example launch |
+| `robstride_examples` | Controller configuration and example launch |
 | `robstride_ros2` | Installs the complete set of packages |
 
 The plugin identifier `robstride_ros2/RobStrideSystem` remains compatible with
@@ -154,6 +156,7 @@ description.
 | `can_rx_qos_depth` | `32` | Reliable, volatile feedback QoS depth; increase for large motor groups |
 | `feedback_timeout_ms` | `3000` | Maximum time without motor feedback before returning ERROR |
 | `fail_on_feedback_timeout` | `true` | Stop the hardware when feedback times out |
+| `transmit_failure_timeout_ms` | `1000` | Grace period before a missing transmit endpoint or stalled sender returns ERROR |
 | `run_mode_recovery_timeout_ms` | `500` | Time allowed for an active motor to recover to Run mode before returning ERROR |
 | `run_mode_recovery_retry_interval_ms` | `100` | Minimum interval between automatic enable retries |
 | `clear_faults_on_activate` | `true` | Clear motor faults during activation |
@@ -171,6 +174,12 @@ enable it again. Commands resume after Run mode is confirmed. If recovery does
 not complete within `run_mode_recovery_timeout_ms`, the hardware reports an
 error and stops all motors.
 
+The transmit path is also monitored while the hardware is active. A temporary
+loss of the CAN bridge's transmit topic endpoint produces a throttled warning.
+If the endpoint remains unavailable, or the transmit worker makes no progress,
+for `transmit_failure_timeout_ms`, `write()` returns ERROR to `ros2_control`.
+An unexpectedly stopped transmit worker returns ERROR immediately.
+
 Minimal example using the default settings:
 
 ```xml
@@ -187,11 +196,12 @@ Each `<joint>` requires its own motor settings.
 |---|---:|---|
 | `can_id` | required | Unique motor CAN ID in the range `1..255` |
 | `can_timeout_ticks` | required | Nonzero motor-side CAN watchdog; 20,000 ticks equals 1 second |
-| `position_min/max` | required | CAN encoding range in radians |
-| `velocity_min/max` | required | CAN encoding range in rad/s |
-| `effort_min/max` | required | Motor-side effort clamp in Nm |
+| `model` | custom | Known model name or `custom` (explicit numeric limits) |
+| `position_min/max` | required for custom | CAN encoding range in radians |
+| `velocity_min/max` | required for custom | CAN encoding range in rad/s |
+| `effort_min/max` | required for custom | Motor-side effort clamp in Nm |
 | `effort_wire_min/max` | effort limits | Motor-side CAN encoding range in Nm |
-| `kp_max` / `kd_max` | required | Gain encoding limits |
+| `kp_max` / `kd_max` | required for custom | Gain encoding limits |
 | `kp` / `kd` | required | Gains used for position and velocity command interfaces |
 | `direction` | `1` | Joint direction; either `1` or `-1` |
 | `gear_ratio` | `1.0` | Additional protocol-side rotations per ROS joint rotation |
@@ -233,8 +243,22 @@ state interfaces. `temperature` and `fault` are optional state interfaces:
 
 ## Model profile macros
 
+Known models resolve their protocol ranges from `robstride_driver`. Set the joint
+parameter `model` to `RS00`–`RS06`, `EL05`, or `EduLite05`; numeric protocol
+limits can be omitted. Supplied numeric limits must exactly match that model.
+Use `command_*` limits for tighter robot operating limits.
+
+For custom hardware, set `model` to `custom` and supply the numeric protocol
+limits listed above. Omitting `model` preserves the existing explicit-limit
+configuration. Gains and watchdog settings remain required.
+
+Existing macro names and arguments remain supported. The old include path in
+`robstride_examples` forwards to the production package. Expanded Xacro now
+contains `model` instead of numeric protocol ranges and requires this driver
+version or newer.
+
 The predefined macros are in
-[`robstride_examples/description/robstride_motor_profiles.xacro`](robstride_examples/description/robstride_motor_profiles.xacro).
+[`robstride_ros2_control/description/robstride_motor_profiles.xacro`](robstride_ros2_control/description/robstride_motor_profiles.xacro).
 
 | Model | Macro | Default watchdog ticks |
 |---|---|---:|
@@ -250,7 +274,7 @@ The predefined macros are in
 Example:
 
 ```xml
-<xacro:include filename="$(find robstride_examples)/description/robstride_motor_profiles.xacro"/>
+<xacro:include filename="$(find robstride_ros2_control)/description/robstride_motor_profiles.xacro"/>
 
 <joint name="wheel_joint_1">
   <xacro:robstride_edulite05_params
@@ -300,6 +324,52 @@ ros2 topic pub --rate 20 \
 
 Use the same procedure with `robstride_effort_controller` for effort commands.
 
+## CAN traffic diagnostics
+
+While the Hardware Component is configured, the driver publishes standard
+`diagnostic_msgs/msg/DiagnosticArray` messages on `/diagnostics` once per
+second:
+
+```bash
+ros2 topic echo /diagnostics
+```
+
+The `robstride_driver/CAN traffic` entry reports transport health, transmitted
+motion, recovery, and lifecycle/parameter transaction frames separately. It
+also reports the number of motion commands replaced before transmission by the
+latest-command-wins queue. Each `robstride_driver/<joint_name>` entry reports
+motor mode, temperature, raw and decoded fault flags, recovery state and
+attempt count, recognized feedback count, average feedback rate, current
+feedback age, and maximum observed feedback age.
+
+Diagnostic levels have the following meaning:
+
+| Level | Motor entry | CAN traffic entry |
+|---|---|---|
+| `OK` | Feedback is current, no fault is set, and an active motor is in Run mode | Transport is healthy |
+| `WARN` | No feedback yet, Run-mode recovery is active, or an active motor is outside Run mode | Endpoint loss is still within its grace period, or hardware is inactive |
+| `ERROR` | Feedback is stale or a motor fault flag is set | A persistent transport failure affects active hardware |
+
+The six fault flags in the normal motor feedback are decoded as undervoltage,
+overcurrent, over-temperature, encoder fault, stall overload, and encoder
+uncalibrated. The `fault_flags_raw` field remains available for firmware-level
+troubleshooting. These names follow the private-protocol feedback definition in
+the RobStride manuals linked below.
+
+The rates are averages since the CAN transport was opened. They are measured
+at the driver boundary, not inferred from the controller-manager update rate.
+In particular, a requested controller rate is not necessarily the physical
+per-motor CAN rate: when commands arrive faster than the transport sends them,
+the pending command for that motor is replaced and the coalesced counter
+increases.
+
+For a multi-motor system, begin with a conservative update rate and observe the
+diagnostics under representative load. A rising coalesced count, falling
+per-motor feedback rate, or increasing feedback age indicates that the update
+rate or other CAN traffic should be reduced. These values do not claim total
+bus utilization: CAN bit stuffing, bitrate, motor response behavior, and
+unrelated traffic are outside the driver's measured counters.
+
 ## Multiple motors
 
 Give every motor a unique joint name and CAN ID, then group joints in controller
@@ -332,6 +402,7 @@ ros2 topic pub --rate 20 \
 |---|---|
 | `can_timeout_ticks` | The motor returns to Reset mode after host commands stop |
 | `feedback_timeout_ms` | The hardware returns ERROR after motor feedback stops |
+| `transmit_failure_timeout_ms` | Persistent transmit endpoint loss or a stalled sender returns ERROR |
 | `shutdown_stop_repetitions` | Zero commands and stop commands are repeated |
 | `shutdown_confirmation_timeout_ms` | The hardware waits for Reset mode feedback |
 
@@ -339,6 +410,21 @@ On deactivation, shutdown, error, or destruction while active, the component
 sends a zero command followed by a stop command to every motor. If the ROS
 transport cannot deliver those commands, the configured motor-side CAN
 watchdog is the final fallback.
+
+Command submission passes through several independently observable stages. A
+controller update first replaces the latest value in the driver's local queue.
+A successful ROS publication means the frame was handed to DDS while a bridge
+subscriber was present; it does not by itself prove transmission on the
+physical CAN bus or execution by the motor. Recognized motor feedback is the
+end-to-end evidence available to this driver, and `feedback_timeout_ms` detects
+its loss independently of transmit-path monitoring.
+
+CI additionally exercises both directions of the topic transport through
+`ros2_socketcan` and a Linux `vcan` interface. A simulated RobStride motor on
+that bus verifies startup parameter confirmation, enable and motion feedback,
+automatic Run-mode recovery, feedback timeout handling, and shutdown when stop
+confirmation is missing. These tests do not replace hardware-in-the-loop
+testing of timing or physical motor behavior.
 
 ## License
 
