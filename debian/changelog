@@ -1,0 +1,37 @@
+ros-jazzy-robstride-examples (0.2.0-1bookworm) bookworm; urgency=high
+
+  * Forward the existing motor-profile Xacro include to robstride_ros2_control,
+    preserving macro names and arguments.
+  * Remove duplicated protocol ranges from the example package.
+  * Verify model selection, explicit gains, and operational limits in Xacro tests.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Sat, 05 Sep 2026 15:00:00 -0000
+
+ros-jazzy-robstride-examples (0.1.2-1bookworm) bookworm; urgency=high
+
+  * Clarify that ``gear_ratio`` applies an ideal additional transmission to
+    position, velocity, and effort.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Tue, 25 Aug 2026 15:00:00 -0000
+
+ros-jazzy-robstride-examples (0.1.1-1bookworm) bookworm; urgency=high
+
+  * Use ``forward_command_controller`` for position, velocity, and effort
+    examples across all supported ROS distributions.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Mon, 24 Aug 2026 15:00:00 -0000
+
+ros-jazzy-robstride-examples (0.1.0-1bookworm) bookworm; urgency=high
+
+  * Add launch, controller configuration, and RS/EduLite actuator profiles.
+  * Expose optional position, velocity, and effort command limits in every motor
+    profile macro.
+  * Require explicit ``kp`` and ``kd`` arguments for every motor-profile macro.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Sat, 08 Aug 2026 15:00:00 -0000
+
+
