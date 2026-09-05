@@ -13,6 +13,19 @@
 
 namespace robstride_driver
 {
+namespace
+{
+int64_t steady_time_ns(std::chrono::steady_clock::time_point time) noexcept
+{
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(time.time_since_epoch()).count();
+}
+
+double rate_hz(uint64_t count, std::chrono::nanoseconds period) noexcept
+{
+  const double seconds = std::chrono::duration<double>(period).count();
+  return seconds > 0.0 ? static_cast<double>(count) / seconds : 0.0;
+}
+}  // namespace
 
 RobStrideDriver::RobStrideDriver(rclcpp::Logger logger)
 : logger_(std::move(logger)), log_clock_(std::make_shared<rclcpp::Clock>(RCL_STEADY_TIME))
@@ -63,6 +76,15 @@ bool RobStrideDriver::initialize(DriverConfiguration configuration)
   }
   runtime_events_.clear();
   runtime_events_.reserve(joints_.size());
+  command_snapshot_.resize(joints_.size());
+  recovery_updates_.clear();
+  recovery_updates_.reserve(joints_.size());
+  for (size_t index = 0; index < joints_.size(); ++index) {
+    command_snapshot_[index].motor_index = index;
+  }
+  feedback_metrics_ = std::make_unique<AtomicMotorFeedback[]>(joints_.size());
+  recovery_metrics_ = std::make_unique<AtomicRecoveryMetrics[]>(joints_.size());
+  reset_metrics();
   return true;
 }
 
@@ -74,9 +96,11 @@ std::vector<JointData> & RobStrideDriver::joints() noexcept
 bool RobStrideDriver::open()
 {
   try {
+    reset_metrics();
     transport_ = std::make_unique<CanTransport>(
       settings_.transport,
-      [this](can_msgs::msg::Frame::ConstSharedPtr frame) {receive_frame(std::move(frame));});
+      [this](can_msgs::msg::Frame::ConstSharedPtr frame) {receive_frame(std::move(frame));},
+      CanTransport::FrameSink{}, [this]() {return metrics();});
     transport_->start();
     return true;
   } catch (const std::exception & error) {
@@ -139,6 +163,11 @@ bool RobStrideDriver::start()
 void RobStrideDriver::stop() noexcept
 {
   try {disable_all();} catch (...) {active_ = false;}
+  if (recovery_metrics_) {
+    for (size_t index = 0; index < joints_.size(); ++index) {
+      recovery_metrics_[index].active = false;
+    }
+  }
 }
 
 bool RobStrideDriver::update_state()
@@ -147,7 +176,11 @@ bool RobStrideDriver::update_state()
   const auto now = std::chrono::steady_clock::now();
   bool read_failed = false;
   runtime_events_.clear();
+  recovery_updates_.clear();
   {
+    // The controller-manager path only snapshots driver state while holding state_mutex_.
+    // Transport queue operations happen after this scope, so driver and transport locks are
+    // never nested. Both vectors reserve one entry per joint during initialize().
     std::lock_guard<std::mutex> lock(state_mutex_);
     for (size_t joint_index = 0; joint_index < joints_.size(); ++joint_index) {
       auto & joint = joints_[joint_index];
@@ -169,8 +202,14 @@ bool RobStrideDriver::update_state()
       const auto action = joint.recovery.update(
         joint.feedback_status.mode, now, settings_.recovery_timeout,
         settings_.recovery_retry_interval);
+      recovery_metrics_[joint_index].active = joint.recovery.active;
+      if (joint.recovery.attempts > attempts_before_update) {
+        recovery_metrics_[joint_index].attempts.fetch_add(
+          static_cast<uint64_t>(joint.recovery.attempts - attempts_before_update));
+      }
       if (action == RecoveryAction::recovered) {
-        transport_->complete_recovery(joint_index);
+        recovery_updates_.push_back(
+          CanTransport::RecoveryUpdate{joint_index, std::nullopt});
         runtime_events_.push_back(
           RuntimeEvent{
             RuntimeEventKind::recovered, joint_index, kMotorModeRun, attempts_before_update});
@@ -188,40 +227,84 @@ bool RobStrideDriver::update_state()
               RuntimeEventKind::recovery_started, joint_index, joint.recovery.detected_mode,
               joint.recovery.attempts});
         }
-        transport_->queue_recovery_frame(
-          joint_index, make_enable(joint.can_id, settings_.host_id));
+        recovery_updates_.push_back(
+          CanTransport::RecoveryUpdate{
+            joint_index, make_enable(joint.can_id, settings_.host_id)});
       }
     }
   }
+  transport_->apply_recovery_updates(recovery_updates_);
   log_runtime_events();
   return !read_failed;
 }
 
-void RobStrideDriver::send_commands()
+bool RobStrideDriver::send_commands()
 {
-  if (!active_) {return;}
-  std::lock_guard<std::mutex> lock(state_mutex_);
-  if (!active_) {return;}
-  for (size_t joint_index = 0; joint_index < joints_.size(); ++joint_index) {
-    const auto & joint = joints_[joint_index];
-    const double joint_position = joint.claimed.position && std::isfinite(joint.command.position) ?
-      joint.command_limits.clamp_position(joint.command.position) :
-      joint.command_limits.clamp_position(joint.state.position);
-    const double motor_position = std::isfinite(joint_position) ?
-      joint.direction * (joint_position - joint.position_offset) * joint.gear_ratio : 0.0;
-    const double motor_velocity = joint.claimed.velocity && std::isfinite(joint.command.velocity) ?
-      joint.direction * joint.command_limits.clamp_velocity(joint.command.velocity) *
-      joint.gear_ratio : 0.0;
-    const double motor_effort =
-      joint.claimed.effort && std::isfinite(joint.command.effort) ?
-      joint.joint_to_motor_effort(joint.command_limits.clamp_effort(joint.command.effort)) :
-      0.0;
-    const double kp = joint.claimed.position ? joint.kp : 0.0;
-    const double kd = (joint.claimed.position || joint.claimed.velocity) ? joint.kd : 0.0;
-    transport_->queue_motion_frame(
-      joint_index, make_motion_command(
-        joint.can_id, joint.limits, motor_position, motor_velocity, motor_effort, kp, kd));
+  if (!active_) {return true;}
+  {
+    // command_snapshot_ is fixed-size after initialize(). The ros2_control write callback is its
+    // sole producer; state_mutex_ is released before the batch takes the transport queue lock.
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (!active_) {return true;}
+    for (size_t joint_index = 0; joint_index < joints_.size(); ++joint_index) {
+      const auto & joint = joints_[joint_index];
+      const double joint_position =
+        joint.claimed.position && std::isfinite(joint.command.position) ?
+        joint.command_limits.clamp_position(joint.command.position) :
+        joint.command_limits.clamp_position(joint.state.position);
+      const double motor_position = std::isfinite(joint_position) ?
+        joint.direction * (joint_position - joint.position_offset) * joint.gear_ratio : 0.0;
+      const double motor_velocity =
+        joint.claimed.velocity && std::isfinite(joint.command.velocity) ?
+        joint.direction * joint.command_limits.clamp_velocity(joint.command.velocity) *
+        joint.gear_ratio : 0.0;
+      const double motor_effort =
+        joint.claimed.effort && std::isfinite(joint.command.effort) ?
+        joint.joint_to_motor_effort(joint.command_limits.clamp_effort(joint.command.effort)) :
+        0.0;
+      const double kp = joint.claimed.position ? joint.kp : 0.0;
+      const double kd = (joint.claimed.position || joint.claimed.velocity) ? joint.kd : 0.0;
+      command_snapshot_[joint_index].frame = make_motion_command(
+        joint.can_id, joint.limits, motor_position, motor_velocity, motor_effort, kp, kd);
+    }
   }
+  transport_->queue_motion_frames(command_snapshot_);
+  return check_transport_health();
+}
+
+bool RobStrideDriver::check_transport_health()
+{
+  if (!transport_) {
+    RCLCPP_ERROR_THROTTLE(
+      logger_, *log_clock_, 1000, "CAN transport is unavailable while hardware is active");
+    return false;
+  }
+
+  const auto health = transport_->health(settings_.transmit_failure_timeout);
+  if (health.state == CanTransportHealthState::healthy) {return true;}
+
+  const auto duration_ms =
+    std::chrono::duration_cast<std::chrono::milliseconds>(health.duration).count();
+  const char * condition = "unknown transport failure";
+  if (health.state == CanTransportHealthState::bridge_unavailable) {
+    condition = "CAN bridge transmit endpoint is unavailable";
+  } else if (health.state == CanTransportHealthState::transmit_stalled) {
+    condition = "CAN transmit worker is not making progress";
+  } else if (health.state == CanTransportHealthState::worker_stopped) {
+    condition = "CAN transmit worker stopped unexpectedly";
+  }
+
+  if (!health.persistent) {
+    RCLCPP_WARN_THROTTLE(
+      logger_, *log_clock_, 1000, "%s (%lld ms); waiting up to %lld ms before returning ERROR",
+      condition, static_cast<long long>(duration_ms),
+      static_cast<long long>(settings_.transmit_failure_timeout.count()));
+    return true;
+  }
+  RCLCPP_ERROR_THROTTLE(
+    logger_, *log_clock_, 1000, "%s for %lld ms; returning ERROR to ros2_control",
+    condition, static_cast<long long>(duration_ms));
+  return false;
 }
 
 std::vector<ClaimedInterfaces> RobStrideDriver::command_modes() const
@@ -261,6 +344,55 @@ bool RobStrideDriver::apply_command_modes(const std::vector<ClaimedInterfaces> &
   return true;
 }
 
+DriverMetrics RobStrideDriver::metrics() const
+{
+  DriverMetrics snapshot;
+  const auto now = std::chrono::steady_clock::now();
+  const int64_t now_ns = steady_time_ns(now);
+  const int64_t started_at_ns = metrics_started_at_ns_.load();
+  snapshot.observation_period = std::chrono::nanoseconds(
+    started_at_ns > 0 ? std::max<int64_t>(0, now_ns - started_at_ns) : 0);
+  snapshot.feedback_frames_received = feedback_frames_received_.load();
+  snapshot.parameter_frames_received = parameter_frames_received_.load();
+  snapshot.hardware_active = active_.load();
+  if (transport_) {
+    snapshot.transport = transport_->metrics();
+    snapshot.transport_health = transport_->health(settings_.transmit_failure_timeout);
+  }
+
+  snapshot.motors.reserve(joints_.size());
+  for (size_t index = 0; index < joints_.size(); ++index) {
+    MotorFeedbackMetrics motor;
+    motor.joint_name = joints_[index].name;
+    motor.can_id = joints_[index].can_id;
+    const auto feedback = feedback_metrics_[index].load();
+    motor.feedback_frames_received = feedback.count;
+    const int64_t last_received_at_ns = feedback.last_received_at_ns;
+    motor.feedback_received = last_received_at_ns > 0;
+    if (motor.feedback_received) {
+      motor.current_feedback_age =
+        std::chrono::nanoseconds(std::max<int64_t>(0, now_ns - last_received_at_ns));
+      motor.maximum_feedback_age = std::max(
+        motor.current_feedback_age,
+        std::chrono::nanoseconds(feedback.maximum_gap_ns));
+    } else {
+      motor.current_feedback_age = snapshot.observation_period;
+      motor.maximum_feedback_age = snapshot.observation_period;
+    }
+    motor.feedback_rate_hz =
+      rate_hz(motor.feedback_frames_received, snapshot.observation_period);
+    motor.temperature = feedback.temperature;
+    motor.mode = feedback.mode;
+    motor.fault_flags = feedback.fault_flags;
+    motor.feedback_stale =
+      motor.feedback_received && motor.current_feedback_age > settings_.feedback_timeout;
+    motor.recovery_active = recovery_metrics_[index].active.load();
+    motor.recovery_attempts = recovery_metrics_[index].attempts.load();
+    snapshot.motors.push_back(std::move(motor));
+  }
+  return snapshot;
+}
+
 void RobStrideDriver::receive_frame(can_msgs::msg::Frame::ConstSharedPtr msg)
 {
   if (msg->is_error || msg->is_rtr) {return;}
@@ -272,6 +404,7 @@ void RobStrideDriver::receive_frame(can_msgs::msg::Frame::ConstSharedPtr msg)
   const auto parameter = decode_parameter_response(
     msg->id, msg->data, msg->dlc, msg->is_extended, settings_.host_id);
   if (parameter) {
+    ++parameter_frames_received_;
     std::lock_guard<std::mutex> lock(state_mutex_);
     auto & joint = joints_[joint_entry->second];
     joint.parameter_status.received = true;
@@ -286,6 +419,9 @@ void RobStrideDriver::receive_frame(can_msgs::msg::Frame::ConstSharedPtr msg)
     msg->id, msg->data, msg->dlc, msg->is_extended, settings_.host_id,
     joints_[joint_entry->second].limits);
   if (!decoded) {return;}
+  const auto received_at = std::chrono::steady_clock::now();
+  ++feedback_frames_received_;
+  record_feedback(joint_entry->second, received_at, *decoded);
   std::lock_guard<std::mutex> lock(state_mutex_);
   auto & joint = joints_[joint_entry->second];
   joint.feedback.position =
@@ -296,8 +432,40 @@ void RobStrideDriver::receive_frame(can_msgs::msg::Frame::ConstSharedPtr msg)
   joint.feedback.fault = decoded->fault_flags;
   joint.feedback_status.mode = decoded->mode;
   joint.feedback_status.received = true;
-  joint.feedback_status.timestamp = std::chrono::steady_clock::now();
+  joint.feedback_status.timestamp = received_at;
   feedback_condition_.notify_all();
+}
+
+void RobStrideDriver::reset_metrics()
+{
+  feedback_frames_received_ = 0;
+  parameter_frames_received_ = 0;
+  metrics_started_at_ns_ = steady_time_ns(std::chrono::steady_clock::now());
+  if (!feedback_metrics_) {return;}
+  for (size_t index = 0; index < joints_.size(); ++index) {
+    feedback_metrics_[index].store(MotorFeedbackSample{});
+    recovery_metrics_[index].active = false;
+    recovery_metrics_[index].attempts = 0;
+  }
+}
+
+void RobStrideDriver::record_feedback(
+  size_t joint_index, std::chrono::steady_clock::time_point now,
+  const Feedback & feedback) noexcept
+{
+  auto sample = feedback_metrics_[joint_index].load();
+  const int64_t now_ns = steady_time_ns(now);
+  const int64_t previous_ns = sample.last_received_at_ns;
+  ++sample.count;
+  sample.last_received_at_ns = now_ns;
+  const int64_t reference_ns =
+    previous_ns > 0 ? previous_ns : metrics_started_at_ns_.load();
+  const int64_t gap_ns = std::max<int64_t>(0, now_ns - reference_ns);
+  sample.maximum_gap_ns = std::max(sample.maximum_gap_ns, gap_ns);
+  sample.mode = feedback.mode;
+  sample.fault_flags = feedback.fault_flags;
+  sample.temperature = feedback.temperature;
+  feedback_metrics_[joint_index].store(sample);
 }
 
 bool RobStrideDriver::write_and_confirm_parameter(
