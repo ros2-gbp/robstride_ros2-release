@@ -1,0 +1,44 @@
+ros-jazzy-robstride-ros2-control (0.2.0-1bookworm) bookworm; urgency=high
+
+  * Resolve known motor models from the production driver profile registry.
+  * Reject unknown model names and conflicting numeric profile overrides while
+    preserving validated custom and legacy explicit-limit configurations.
+  * Install production-owned motor-profile Xacro helpers and declare their
+    Xacro runtime dependency.
+  * Propagate persistent transport failures through the hardware interface.
+  * Expanded profile macros now emit a model name instead of numeric ranges;
+    use the updated driver together with the updated Xacro helpers.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Sat, 05 Sep 2026 15:00:00 -0000
+
+ros-jazzy-robstride-ros2-control (0.1.2-1bookworm) bookworm; urgency=high
+
+  * Derive default ROS joint effort limits from motor limits through
+    ``gear_ratio`` and ``direction``.
+  * Validate explicit joint effort limits after converting them back to motor
+    clamp and CAN encoding coordinates.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Tue, 25 Aug 2026 15:00:00 -0000
+
+ros-jazzy-robstride-ros2-control (0.1.1-1bookworm) bookworm; urgency=high
+
+  * Synchronize the package version for the multi-package compatibility release.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Mon, 24 Aug 2026 15:00:00 -0000
+
+ros-jazzy-robstride-ros2-control (0.1.0-1bookworm) bookworm; urgency=high
+
+  * Add a ros2_control SystemInterface adapter backed by ``robstride_driver``.
+  * Support position, velocity, and effort command-mode switching per joint.
+  * Parse and validate optional ROS joint-coordinate command limits separately
+    from the CAN encoding ranges.
+  * Reject non-finite joint values, invalid watchdog values, and blank CAN topic
+    names during hardware configuration.
+  * Contributors: Yamato.K
+
+ -- "yamato" <ykturtler@outlook.com>  Sat, 08 Aug 2026 15:00:00 -0000
+
+
