@@ -3,7 +3,7 @@
 RobStrideアクチュエータをprivate CAN protocolで制御する、非公式・コミュニティ管理のROS 2 `ros2_control` Hardware Componentです。
 CAN frameの送受信には`can_msgs/msg/Frame` topicを使用します。core packageは`can_msgs`に依存し、特定のSocketCAN bridgeを必要としません。
 
-本プロジェクトはRobStride社とは提携しておらず、同社による承認を受けたものではありません。protocolと型番別profileは、RobStride公式[`Product_Information`](https://github.com/RobStride/Product_Information) repositoryの英語版manualと照合しています。英語版READMEは[`README.md`](README.md)を参照してください。
+本プロジェクトはRobStride社とは提携しておらず、同社による承認を受けたものではありません。protocolと型番別profileは、RobStride公式[`Product_Information`](https://github.com/RobStride/Product_Information) repositoryの英語版manualと照合しています。英語版READMEは[`README.md`](../README.md)を参照してください。
 
 ## 主な機能
 
@@ -14,7 +14,9 @@ CAN frameの送受信には`can_msgs/msg/Frame` topicを使用します。core p
 - 位置、速度、トルク、温度、faultのfeedback
 - 起動時のparameter読み戻しとモーター有効化確認
 - feedback timeoutと終了時の停止指令再送
+- 継続的な送信障害を`ros2_control` lifecycleへ通知
 - activateのたびにmotor側CAN watchdogを非ゼロ値へ設定
+- CAN traffic、command coalescing、モーター別feedbackのdiagnostics
 
 ## パッケージ構成
 
@@ -125,6 +127,7 @@ ros2 topic pub --rate 20 \
 | `can_rx_qos_depth` | `32` | reliable・volatileなfeedback QoS depth。多数のモーターを使う場合は増加を検討 |
 | `feedback_timeout_ms` | `3000` | feedbackを受信できない状態でERRORを返すまでの時間 |
 | `fail_on_feedback_timeout` | `true` | feedback timeout時にHardwareを停止 |
+| `transmit_failure_timeout_ms` | `1000` | 送信endpointの消失またはsender停滞をERRORにするまでの猶予時間 |
 | `run_mode_recovery_timeout_ms` | `500` | active中のモーターがRunへ復帰するまで待つ時間 |
 | `run_mode_recovery_retry_interval_ms` | `100` | 自動有効化を再試行する最小間隔 |
 | `clear_faults_on_activate` | `true` | activate時にモーターのfaultをclear |
@@ -137,6 +140,11 @@ ros2 topic pub --rate 20 \
 | `startup_retries` | `3` | 起動時のparameter設定と有効化の最大試行回数 |
 
 Hardwareがactiveの間は、各モーターの動作状態を監視します。モーターが意図せずRun以外へ移行するとWARNを出力し、自動的に再度有効化します。Runへの復帰を確認すると指令送信を再開します。`run_mode_recovery_timeout_ms`以内に復帰しない場合はHardwareがERRORを返し、すべてのモーターを停止します。
+
+active中は送信経路も監視します。CAN bridgeの送信topic endpointが一時的に消失した
+場合は、間引いたWARNを出して復帰を待ちます。endpointの消失または送信workerの停滞が
+`transmit_failure_timeout_ms`を超えると、`write()`が`ros2_control`へERRORを返します。
+送信worker自体が予期せず終了した場合は、直ちにERRORを返します。
 
 既定値を使う最小構成は次のとおりです。
 
@@ -154,11 +162,12 @@ Hardwareがactiveの間は、各モーターの動作状態を監視します。
 |---|---:|---|
 | `can_id` | 必須 | 一意なmotor CAN ID。範囲は`1..255` |
 | `can_timeout_ticks` | 必須 | motor側CAN watchdog。非ゼロ必須。20,000 ticksで1秒 |
-| `position_min/max` | 必須 | CAN positionのencode・decode範囲 `[rad]` |
-| `velocity_min/max` | 必須 | CAN velocityのencode・decode範囲 `[rad/s]` |
-| `effort_min/max` | 必須 | モーター側effortのclamp範囲 `[Nm]` |
+| `model` | custom | 型番名、または数値を明示する`custom` |
+| `position_min/max` | custom時必須 | CAN positionのencode・decode範囲 `[rad]` |
+| `velocity_min/max` | custom時必須 | CAN velocityのencode・decode範囲 `[rad/s]` |
+| `effort_min/max` | custom時必須 | モーター側effortのclamp範囲 `[Nm]` |
 | `effort_wire_min/max` | effort制限と同じ | モーター側CAN effortのencode・decode範囲 `[Nm]` |
-| `kp_max` / `kd_max` | 必須 | gainのencode上限 |
+| `kp_max` / `kd_max` | custom時必須 | gainのencode上限 |
 | `kp` / `kd` | 必須 | position・velocity command interfaceで使用するgain |
 | `direction` | `1` | jointの方向。`1`または`-1` |
 | `gear_ratio` | `1.0` | ROS joint回転に対する追加のprotocol側回転比 |
@@ -189,7 +198,17 @@ effortにも同じ理想transmission変換を適用します。モーターへ�
 
 ## 型番別Xacro macro
 
-定義は[`robstride_examples/description/robstride_motor_profiles.xacro`](robstride_examples/description/robstride_motor_profiles.xacro)にあります。
+型番はjointの`model`に`RS00`〜`RS06`、`EL05`（別名`EduLite05`）を指定できます。
+この場合、数値の通信範囲は`robstride_driver`から設定され、省略できます。
+併記した数値が型番の定義と異なる場合は起動エラーになります。
+運用上の制限には`command_*`を使用してください。
+`model="custom"`または`model`省略時は、従来どおり数値の通信範囲を指定します。
+ゲインとwatchdogの指定は引き続き必要です。
+
+既存のマクロ名・引数とexamples側のincludeパスは維持します。
+展開後のXacroは数値の通信範囲の代わりに`model`を出力するため、対応する新しいdriverが必要です。
+
+定義は[`robstride_ros2_control/description/robstride_motor_profiles.xacro`](../robstride_ros2_control/description/robstride_motor_profiles.xacro)にあります。
 
 | 型番 | macro | default watchdog ticks |
 |---|---|---:|
@@ -205,7 +224,7 @@ effortにも同じ理想transmission変換を適用します。モーターへ�
 使用例：
 
 ```xml
-<xacro:include filename="$(find robstride_examples)/description/robstride_motor_profiles.xacro"/>
+<xacro:include filename="$(find robstride_ros2_control)/description/robstride_motor_profiles.xacro"/>
 
 <joint name="wheel_joint_1">
   <xacro:robstride_edulite05_params
@@ -248,6 +267,46 @@ ros2 topic pub --rate 20 \
 
 effort指令では同様に`robstride_effort_controller`を使用します。
 
+## CAN trafficの確認
+
+Hardware Componentがconfigureされている間、driverは標準の
+`diagnostic_msgs/msg/DiagnosticArray`を1秒ごとに`/diagnostics`へpublishします。
+
+```bash
+ros2 topic echo /diagnostics
+```
+
+`robstride_driver/CAN traffic`には、transport health、motion frame、recovery frame、
+lifecycle/parameter transaction frameそれぞれの送信数と、
+latest-command-wins queueで未送信motion commandが新しい値へ置き換えられた回数が表示されます。
+各`robstride_driver/<joint_name>`には、motor mode、温度、rawおよび名称付きfault、
+recovery状態と試行回数、認識したfeedback数、平均feedback rate、現在のfeedback age、
+最大feedback ageが表示されます。
+
+diagnostic levelは次のように解釈します。
+
+| level | motor entry | CAN traffic entry |
+|---|---|---|
+| `OK` | feedbackが新しくfaultがなく、active中ならRun mode | transportが正常 |
+| `WARN` | feedback未受信、Run mode復帰中、またはactive中にRun以外 | endpoint消失が猶予時間内、またはHardwareがinactive |
+| `ERROR` | feedbackが古い、またはmotor faultあり | activeなHardwareに影響する継続的なtransport障害 |
+
+通常feedbackの6つのfault flagは、undervoltage、overcurrent、over-temperature、
+encoder fault、stall overload、encoder uncalibratedとして表示します。
+firmware単位の調査用に`fault_flags_raw`も保持します。名称は末尾に記載した
+RobStride manualのprivate protocol feedback定義に従います。
+
+rateはCAN transportをopenしてからの平均実測値であり、controller managerの
+update rateから推定した値ではありません。command生成がtransportの送信より速い場合は、
+そのモーターの未送信commandが置き換えられるため、controllerの要求rateと実際の
+CAN送信rateは一致せず、coalesced counterが増加します。
+
+複数モーターでは低めのupdate rateから開始し、実際の負荷でdiagnosticsを確認してください。
+coalesced countの継続的な増加、モーター別feedback rateの低下、feedback ageの増加が
+見られる場合は、update rateまたは他のCAN trafficを減らします。これらはdriver境界の
+実測値であり、bit stuffing、bitrate、モーターの応答動作、無関係なCAN trafficを含む
+bus utilizationの推定値ではありません。
+
 ## 複数モーター
 
 モーターごとに一意なjoint名とCAN IDを設定し、controller設定の`joints`でグループ分けします。例えばCAN ID 1～4を速度制御、5～6を位置制御にできます。
@@ -278,14 +337,27 @@ ros2 topic pub --rate 20 \
 |---|---|
 | `can_timeout_ticks` | hostからの指令が途絶えるとモーターがReset modeへ移行 |
 | `feedback_timeout_ms` | モーターからのfeedbackが途絶えるとHardwareがERRORを返す |
+| `transmit_failure_timeout_ms` | 送信endpoint消失またはsender停滞が続くとHardwareがERRORを返す |
 | `shutdown_stop_repetitions` | ゼロ指令と停止指令を繰り返し送信 |
 | `shutdown_confirmation_timeout_ms` | Reset modeのfeedbackを待機 |
 
 deactivate、shutdown、error、またはactive中のdestructionでは、すべてのモーターへゼロ指令に続いて停止指令を送ります。ROS transportが指令を配送できなかった場合は、設定済みのmotor側CAN watchdogが最終的な停止手段になります。
 
+指令の送信には、それぞれ独立して観測できる段階があります。controllerの更新は、まず
+driver内の最新値queueを置き換えます。ROS topicのpublish成功は、bridge subscriberが
+存在する状態でframeをDDSへ渡したことを意味しますが、物理CAN busへの送信やモーターでの
+実行完了までは保証しません。本driverが得られるend-to-endの根拠は認識済みmotor feedback
+であり、その消失は送信経路とは独立して`feedback_timeout_ms`が検出します。
+
+CIではLinuxの`vcan` interfaceと`ros2_socketcan`を使い、仮想RobStrideモーターとの
+送受信を実frame IDとpayloadまで検証します。起動時parameter確認、enable、指令と
+feedback、Run mode自動復帰、feedback timeout、停止確認が得られない場合のshutdownを
+確認します。物理CAN adapterやモーターを必要としませんが、実機のtimingやモーター
+動作を確認するhardware-in-the-loop testの代替ではありません。
+
 ## License
 
-[MIT](LICENSE)
+[MIT](../LICENSE)
 
 ## 参考資料
 
