@@ -20,14 +20,64 @@ using robstride_driver::JointData;
 using robstride_driver::Limits;
 namespace
 {
-double required_number(
+std::string trimmed(const std::string & text)
+{
+  const auto first = text.find_first_not_of(" \t\r\n\f\v");
+  if (first == std::string::npos) {return {};}
+  return text.substr(first, text.find_last_not_of(" \t\r\n\f\v") - first + 1);
+}
+
+double parse_number(const std::string & text, const char * key)
+{
+  try {
+    const auto value_text = trimmed(text);
+    size_t consumed = 0;
+    const double value = std::stod(value_text, &consumed);
+    if (consumed != value_text.size() || !std::isfinite(value)) {
+      throw std::invalid_argument("not a finite number");
+    }
+    return value;
+  } catch (const std::exception &) {
+    throw std::runtime_error(std::string(key) + " must be a complete finite number");
+  }
+}
+
+uint64_t parse_integer(
+  const std::string & text, const char * key, uint64_t minimum, uint64_t maximum,
+  int base = 10)
+{
+  try {
+    const auto value_text = trimmed(text);
+    if (value_text.empty() || value_text.front() == '-') {
+      throw std::invalid_argument("negative or empty integer");
+    }
+    size_t consumed = 0;
+    const auto value = std::stoull(value_text, &consumed, base);
+    if (consumed != value_text.size() || value < minimum || value > maximum) {
+      throw std::out_of_range("integer outside supported range");
+    }
+    return value;
+  } catch (const std::exception &) {
+    throw std::runtime_error(
+            std::string(key) + " must be a complete integer in " +
+            std::to_string(minimum) + ".." + std::to_string(maximum));
+  }
+}
+
+const std::string & required_value(
   const std::unordered_map<std::string, std::string> & parameters, const char * key)
 {
   const auto it = parameters.find(key);
   if (it == parameters.end()) {
     throw std::runtime_error(std::string("missing parameter '") + key + "'");
   }
-  return std::stod(it->second);
+  return it->second;
+}
+
+double required_number(
+  const std::unordered_map<std::string, std::string> & parameters, const char * key)
+{
+  return parse_number(required_value(parameters, key), key);
 }
 
 double number_or_parameter(
@@ -43,7 +93,7 @@ double number_or_value(
   const char * key, double default_value)
 {
   const auto it = parameters.find(key);
-  return it == parameters.end() ? default_value : std::stod(it->second);
+  return it == parameters.end() ? default_value : parse_number(it->second, key);
 }
 
 std::pair<double, double> ordered_range(double first, double second)
@@ -84,11 +134,8 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
     JointData joint;
     joint.name = info.name;
     joint.feedback = joint.state;
-    const int motor_can_id = std::stoi(info.parameters.at("can_id"), nullptr, 0);
-    if (motor_can_id < 1 || motor_can_id > 255) {
-      throw std::runtime_error("can_id must be 1..255");
-    }
-    joint.can_id = static_cast<uint8_t>(motor_can_id);
+    joint.can_id = static_cast<uint8_t>(parse_integer(
+        required_value(info.parameters, "can_id"), "can_id", 1, 255, 0));
     const auto model = info.parameters.find("model");
     if (model != info.parameters.end() && model->second != "custom") {
       joint.limits = robstride_driver::motor_profile(model->second);
@@ -104,10 +151,8 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
         {"kp_max", joint.limits.kp_max}, {"kd_max", joint.limits.kd_max}};
       for (const auto & entry : expected) {
         if (info.parameters.count(entry.first)) {
-          size_t consumed = 0;
-          const auto & text = info.parameters.at(entry.first);
-          const double value = std::stod(text, &consumed);
-          if (consumed != text.size() || value != entry.second) {
+          const double value = required_number(info.parameters, entry.first);
+          if (value != entry.second) {
             throw std::runtime_error(
                     std::string(entry.first) + " conflicts with model '" + model->second + "'");
           }
@@ -127,23 +172,12 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
     }
     joint.kp = required_number(info.parameters, "kp");
     joint.kd = required_number(info.parameters, "kd");
-    const auto & watchdog_text = info.parameters.at("can_timeout_ticks");
-    size_t watchdog_characters = 0;
-    const auto watchdog_value = std::stoull(watchdog_text, &watchdog_characters, 0);
-    if (watchdog_characters != watchdog_text.size() || watchdog_value == 0 ||
-      watchdog_value > std::numeric_limits<uint32_t>::max())
-    {
-      throw std::runtime_error("can_timeout_ticks must be a nonzero uint32 value");
-    }
-    joint.can_timeout_ticks = static_cast<uint32_t>(watchdog_value);
-    const auto direction = info.parameters.find("direction");
-    joint.direction = direction == info.parameters.end() ? 1.0 : std::stod(direction->second);
-    const auto gear_ratio = info.parameters.find("gear_ratio");
-    joint.gear_ratio =
-      gear_ratio == info.parameters.end() ? 1.0 : std::stod(gear_ratio->second);
-    const auto position_offset = info.parameters.find("position_offset");
-    joint.position_offset =
-      position_offset == info.parameters.end() ? 0.0 : std::stod(position_offset->second);
+    joint.can_timeout_ticks = static_cast<uint32_t>(parse_integer(
+        required_value(info.parameters, "can_timeout_ticks"), "can_timeout_ticks",
+        1, std::numeric_limits<uint32_t>::max(), 0));
+    joint.direction = number_or_value(info.parameters, "direction", 1.0);
+    joint.gear_ratio = number_or_value(info.parameters, "gear_ratio", 1.0);
+    joint.position_offset = number_or_value(info.parameters, "position_offset", 0.0);
     if (joint.direction != 1.0 && joint.direction != -1.0) {
       throw std::runtime_error("direction must be 1 or -1");
     }
@@ -174,9 +208,11 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
       throw std::runtime_error("invalid limits or gains");
     }
 
-    const auto default_position = ordered_range(
-      joint.direction * (joint.limits.position_min / joint.gear_ratio) + joint.position_offset,
-      joint.direction * (joint.limits.position_max / joint.gear_ratio) + joint.position_offset);
+    const auto position_range = joint.joint_position_range();
+    if (!position_range) {
+      throw std::runtime_error("position transform must produce a finite, ordered joint range");
+    }
+    const auto default_position = *position_range;
     const auto default_velocity = ordered_range(
       joint.direction * (joint.limits.velocity_min / joint.gear_ratio),
       joint.direction * (joint.limits.velocity_max / joint.gear_ratio));
@@ -191,6 +227,9 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
       number_or_value(info.parameters, "command_effort_min", default_effort.first),
       number_or_value(info.parameters, "command_effort_max", default_effort.second)};
 
+    if (const auto * range = joint.invalid_neutral_range()) {
+      throw std::runtime_error(std::string(range) + " must be finite, ordered, and include zero");
+    }
     const auto & command = joint.command_limits;
     if (!std::isfinite(command.position_min) || !std::isfinite(command.position_max) ||
       !std::isfinite(command.velocity_min) || !std::isfinite(command.velocity_max) ||
@@ -202,18 +241,14 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
       throw std::runtime_error("command limits must be finite and ordered");
     }
 
-    const auto motor_position = ordered_range(
-      joint.direction * (command.position_min - joint.position_offset) * joint.gear_ratio,
-      joint.direction * (command.position_max - joint.position_offset) * joint.gear_ratio);
     const auto motor_velocity = ordered_range(
       joint.direction * command.velocity_min * joint.gear_ratio,
       joint.direction * command.velocity_max * joint.gear_ratio);
     const auto motor_effort = ordered_range(
       joint.joint_to_motor_effort(command.effort_min),
       joint.joint_to_motor_effort(command.effort_max));
-    if (!contains_range(
-        joint.limits.position_min, joint.limits.position_max,
-        motor_position.first, motor_position.second) ||
+    if (!joint.checked_joint_to_motor_position(command.position_min) ||
+      !joint.checked_joint_to_motor_position(command.position_max) ||
       !contains_range(
         joint.limits.velocity_min, joint.limits.velocity_max,
         motor_velocity.first, motor_velocity.second) ||
@@ -231,7 +266,12 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
       hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
       hardware_interface::HW_IF_EFFORT};
     std::set<std::string> actual_commands;
-    for (const auto & interface : info.command_interfaces) {actual_commands.insert(interface.name);}
+    for (const auto & interface : info.command_interfaces) {
+      if (!interface.data_type.empty() && interface.data_type != "double") {
+        throw std::runtime_error("command interface '" + interface.name + "' must use double data");
+      }
+      actual_commands.insert(interface.name);
+    }
     if (actual_commands != expected_commands || info.command_interfaces.size() != 3) {
       throw std::runtime_error("command interfaces must be position, velocity and effort");
     }
@@ -243,7 +283,12 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
       hardware_interface::HW_IF_POSITION, hardware_interface::HW_IF_VELOCITY,
       hardware_interface::HW_IF_EFFORT, "temperature", "fault"};
     std::set<std::string> actual_states;
-    for (const auto & interface : info.state_interfaces) {actual_states.insert(interface.name);}
+    for (const auto & interface : info.state_interfaces) {
+      if (!interface.data_type.empty() && interface.data_type != "double") {
+        throw std::runtime_error("state interface '" + interface.name + "' must use double data");
+      }
+      actual_states.insert(interface.name);
+    }
     if (!std::includes(
         actual_states.begin(), actual_states.end(), required_states.begin(), required_states.end()) ||
       !std::includes(
@@ -262,13 +307,12 @@ JointData parse_joint(const hardware_interface::ComponentInfo & info)
 }  // namespace
 
 DriverConfiguration parse_driver_configuration(const hardware_interface::HardwareInfo & info)
+try
 {
   DriverConfiguration configuration;
   auto & settings = configuration.settings;
-  const int host_can_id = std::stoi(hardware_parameter_or(info, "host_can_id", "253"), nullptr, 0);
-  if (host_can_id < 0 || host_can_id > 255) {
-    throw std::runtime_error("host_can_id must be 0..255");
-  }
+  const auto host_can_id = parse_integer(
+    hardware_parameter_or(info, "host_can_id", "253"), "host_can_id", 0, 255, 0);
   settings.host_id = static_cast<uint8_t>(host_can_id);
   settings.transport.node_name = info.name + "_can_transport";
   settings.transport.transmit_topic = hardware_parameter_or(info, "can_tx_topic", "to_can_bus");
@@ -277,50 +321,44 @@ DriverConfiguration parse_driver_configuration(const hardware_interface::Hardwar
     throw std::runtime_error("CAN transmit and receive topic names must not be empty");
   }
 
-  settings.transport.receive_qos_depth = static_cast<size_t>(
-    std::stoul(hardware_parameter_or(info, "can_rx_qos_depth", "32")));
+  settings.transport.receive_qos_depth = static_cast<size_t>(parse_integer(
+      hardware_parameter_or(info, "can_rx_qos_depth", "32"), "can_rx_qos_depth", 1, 4096));
+
+  const auto integer = [&info](const char * key, const char * fallback, uint64_t minimum = 1) {
+      return static_cast<int>(parse_integer(
+          hardware_parameter_or(info, key, fallback), key, minimum,
+          std::numeric_limits<int>::max()));
+    };
 
   settings.feedback_timeout = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "feedback_timeout_ms", "3000")));
+    integer("feedback_timeout_ms", "3000"));
   settings.fail_on_feedback_timeout = parse_bool(
     hardware_parameter_or(info, "fail_on_feedback_timeout", "true"));
   settings.transmit_failure_timeout = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "transmit_failure_timeout_ms", "1000")));
+    integer("transmit_failure_timeout_ms", "1000"));
   settings.recovery_timeout = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "run_mode_recovery_timeout_ms", "500")));
+    integer("run_mode_recovery_timeout_ms", "500"));
   settings.recovery_retry_interval = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "run_mode_recovery_retry_interval_ms", "100")));
+    integer("run_mode_recovery_retry_interval_ms", "100"));
   settings.clear_faults_on_start = parse_bool(
     hardware_parameter_or(info, "clear_faults_on_activate", "true"));
   settings.set_zero_on_start = parse_bool(
     hardware_parameter_or(info, "set_zero_on_activate", "false"));
   settings.stop_repetitions =
-    std::stoi(hardware_parameter_or(info, "shutdown_stop_repetitions", "3"));
+    integer("shutdown_stop_repetitions", "3");
   settings.stop_interval = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "shutdown_stop_interval_ms", "20")));
+    integer("shutdown_stop_interval_ms", "20", 0));
   settings.stop_confirmation_timeout = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "shutdown_confirmation_timeout_ms", "300")));
+    integer("shutdown_confirmation_timeout_ms", "300", 0));
   settings.connection_timeout = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "startup_connection_timeout_ms", "3000")));
+    integer("startup_connection_timeout_ms", "3000"));
   settings.startup_confirmation_timeout = std::chrono::milliseconds(
-    std::stoi(hardware_parameter_or(info, "startup_confirmation_timeout_ms", "500")));
-  settings.startup_retries = std::stoi(hardware_parameter_or(info, "startup_retries", "3"));
+    integer("startup_confirmation_timeout_ms", "500"));
+  settings.startup_retries = integer("startup_retries", "3");
 
-  if (settings.transport.receive_qos_depth == 0 || settings.feedback_timeout.count() <= 0 ||
-    settings.transmit_failure_timeout.count() <= 0 ||
-    settings.recovery_timeout.count() <= 0 || settings.recovery_retry_interval.count() <= 0 ||
-    settings.recovery_retry_interval > settings.recovery_timeout)
-  {
+  if (settings.recovery_retry_interval > settings.recovery_timeout) {
     throw std::runtime_error(
-            "CAN QoS depth, feedback and transmit failure timeouts, and Run-mode recovery "
-            "timings must be positive; "
-            "recovery retry interval must not exceed its timeout");
-  }
-  if (settings.stop_repetitions <= 0 || settings.stop_interval.count() < 0 ||
-    settings.stop_confirmation_timeout.count() < 0 || settings.connection_timeout.count() <= 0 ||
-    settings.startup_confirmation_timeout.count() <= 0 || settings.startup_retries <= 0)
-  {
-    throw std::runtime_error("invalid startup or shutdown timing parameters");
+            "run_mode_recovery_retry_interval_ms must not exceed run_mode_recovery_timeout_ms");
   }
 
   if (info.joints.empty()) {throw std::runtime_error("at least one joint is required");}
@@ -335,6 +373,8 @@ DriverConfiguration parse_driver_configuration(const hardware_interface::Hardwar
   }
   settings.transport.motor_count = configuration.joints.size();
   return configuration;
+} catch (const std::exception & error) {
+  throw std::runtime_error("Hardware '" + info.name + "': " + error.what());
 }
 
 }  // namespace robstride_ros2_control
