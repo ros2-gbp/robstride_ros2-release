@@ -1,5 +1,0 @@
-<?xml version="1.0"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robstride_motor_profiles">
-  <!-- Compatibility include for existing robot descriptions. -->
-  <xacro:include filename="$(find robstride_ros2_control)/description/robstride_motor_profiles.xacro"/>
-</robot>
