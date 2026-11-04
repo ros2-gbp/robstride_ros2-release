@@ -18,6 +18,12 @@ CAN frameの送受信には`can_msgs/msg/Frame` topicを使用します。core p
 - activateのたびにmotor側CAN watchdogを非ゼロ値へ設定
 - CAN traffic、command coalescing、モーター別feedbackのdiagnostics
 
+## 0.2.xから0.3.0への更新
+
+範囲外指令はclampされず、全joint分の指令送信が拒否されます。指令を修正してhardware/controllerを再有効化してください。位置制御の有効化には、運用範囲内の新しい位置feedbackも必要です。
+
+サンプルでは`set_zero_on_activate`が有効になり、hardwareをactivateするたびに機械ゼロを再設定します。driver自体の既定値は`false`のままです。校正済みの基準位置を使用するロボットでは、サンプルの設定を確認してください。plugin IDと自動Run-mode復帰方針は変更していません。変更点と残る制約は[CHANGELOG](../CHANGELOG.rst)を参照してください。
+
 ## パッケージ構成
 
 repositoryには4つのROS 2 packageが含まれます。
@@ -124,7 +130,7 @@ ros2 topic pub --rate 20 \
 | `host_can_id` | `253` | host CAN ID。範囲は`0..255` |
 | `can_tx_topic` | `to_can_bus` | 送信する`can_msgs/msg/Frame` topic |
 | `can_rx_topic` | `from_can_bus` | 受信する`can_msgs/msg/Frame` topic |
-| `can_rx_qos_depth` | `32` | reliable・volatileなfeedback QoS depth。多数のモーターを使う場合は増加を検討 |
+| `can_rx_qos_depth` | `32` | reliable・volatileなfeedback QoS depth（`1`〜`4096`）。多数のモーターを使う場合は増加を検討 |
 | `feedback_timeout_ms` | `3000` | feedbackを受信できない状態でERRORを返すまでの時間 |
 | `fail_on_feedback_timeout` | `true` | feedback timeout時にHardwareを停止 |
 | `transmit_failure_timeout_ms` | `1000` | 送信endpointの消失またはsender停滞をERRORにするまでの猶予時間 |
@@ -165,7 +171,7 @@ active中は送信経路も監視します。CAN bridgeの送信topic endpoint�
 | `model` | custom | 型番名、または数値を明示する`custom` |
 | `position_min/max` | custom時必須 | CAN positionのencode・decode範囲 `[rad]` |
 | `velocity_min/max` | custom時必須 | CAN velocityのencode・decode範囲 `[rad/s]` |
-| `effort_min/max` | custom時必須 | モーター側effortのclamp範囲 `[Nm]` |
+| `effort_min/max` | custom時必須 | モーター側effortの指令範囲 `[Nm]` |
 | `effort_wire_min/max` | effort制限と同じ | モーター側CAN effortのencode・decode範囲 `[Nm]` |
 | `kp_max` / `kd_max` | custom時必須 | gainのencode上限 |
 | `kp` / `kd` | 必須 | position・velocity command interfaceで使用するgain |
@@ -180,7 +186,12 @@ active中は送信経路も監視します。CAN bridgeの送信topic endpoint�
 
 effortにも同じ理想transmission変換を適用します。モーターへのeffort指令はROS joint effortを`gear_ratio`で割り、ROS jointへ返すfeedback effortはモーター側effortに`gear_ratio`を掛けます。`direction`は両方向の変換に適用されます。transmission効率は考慮しません。
 
-任意指定の`command_*`は、型番固有のCAN encode範囲を変更せず、ロボットの運用範囲を狭めるための制限です。値はROS joint座標で指定します。有限値でない、最小値と最大値が逆、または`direction`・`gear_ratio`・`position_offset`の変換後にCAN範囲外となる設定は、configure時に拒否されます。
+数値パラメータは全体が有限の数値である必要があります。末尾の余計な文字や途中の空白は拒否し、前後の空白と先頭の`+`は許可します。整数パラメータの負号（`-0`を含む）は拒否します。CAN IDと`can_timeout_ticks`は従来どおり10進、`0x`付き16進、先頭ゼロ付き8進表記に対応し、それ以外の整数は10進表記です。タイムアウト・試行回数の上限は`2147483647`で、終了時の送信間隔と停止確認タイムアウトのみゼロを許可します。`can_timeout_ticks`の範囲は`1`〜`4294967295`です。
+
+任意指定の`command_*`は、型番固有のCAN encode範囲を変更せず、ロボットの運用範囲を狭めるための制限です。値はROS joint座標で指定します。有限値でない、最小値と最大値が逆、または`direction`・`gear_ratio`・`position_offset`の変換後にCAN範囲外となる設定は、設定読み込み時に拒否されます。
+速度・トルクの範囲（運用制限とCAN範囲の両方）は、有効化時や中立のゼロ指令が非ゼロにクランプされないよう、ゼロを含む必要があります。ゼロが範囲の端でも構いません。位置範囲にはこの条件はありません。
+
+位置制御の有効化には、新しく受信した有限の位置フィードバックが`command_position_min/max`内にあることが必要です。切替の準備時と実行時に確認し、拒否された場合は以前のモードを維持します。`fail_on_feedback_timeout`を無効にしていても、位置切替には`feedback_timeout_ms`以内のフィードバックが必要です。最初の位置目標には最新の実測位置を使用し、範囲の境界へ丸めません。動作中も位置・速度・トルクの指令が`command_*`範囲または変換後のモーター範囲を超えた場合、クランプせず、全joint分のCAN指令を送信せずに`write()`からros2_controlへエラーを返します。指令を修正してhardware/controllerを再有効化してください。
 
 各jointは3つのcommand interfaceと、position・velocity・effortのstate interfaceをすべてexportする必要があります。`temperature`と`fault`は省略できます。
 
@@ -354,6 +365,11 @@ CIではLinuxの`vcan` interfaceと`ros2_socketcan`を使い、仮想RobStride�
 feedback、Run mode自動復帰、feedback timeout、停止確認が得られない場合のshutdownを
 確認します。物理CAN adapterやモーターを必要としませんが、実機のtimingやモーター
 動作を確認するhardware-in-the-loop testの代替ではありません。
+仮想モーターの測定位置は指令と分離し、zero-gain起動指令で位置を変更しません。
+monotonic clockと50µs単位の設定値でCAN watchdogを模擬し、指令消失でResetに移ります。
+2つのmotor IDで片側だけの通信障害、復帰先のrouting、feedback timeout設定の両動作、
+可動範囲外からの起動と通信再開を確認します。待機は期限付きで、失敗時もRAIIで終了処理します。
+これらはfirmware適合性や物理的安全性を保証するものではありません。
 
 ## License
 
@@ -361,5 +377,5 @@ feedback、Run mode自動復帰、feedback timeout、停止確認が得られな
 
 ## 参考資料
 
-- [RobStride Product Information revision `6ad12f5`（2026年7月14日）](https://github.com/RobStride/Product_Information/tree/6ad12f50006273b7ea4eea88980f927d97c22f0d)
+- [RobStride Product Information revision `6ad12f5`（2026年9月9日）](https://github.com/RobStride/Product_Information/tree/6ad12f50006273b7ea4eea88980f927d97c22f0d)
 - [`ros2_socketcan`](https://github.com/autowarefoundation/ros2_socketcan)
