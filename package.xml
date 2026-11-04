@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>robstride_examples</name>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <description>Ready-to-use Xacro profiles, ros2_control configuration, and launch examples for RobStride actuators.</description>
   <maintainer email="ykturtler@outlook.com">yamato</maintainer>
   <license>MIT</license>
@@ -23,6 +23,12 @@
   <exec_depend>ros2_socketcan</exec_depend>
   <exec_depend>xacro</exec_depend>
   <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>controller_manager_msgs</test_depend>
+  <test_depend>lifecycle_msgs</test_depend>
+  <test_depend>rclpy</test_depend>
+  <test_depend>ros2run</test_depend>
+  <test_depend>sensor_msgs</test_depend>
+  <test_depend>std_msgs</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
