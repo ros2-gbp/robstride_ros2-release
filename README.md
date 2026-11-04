@@ -1,3 +1,30 @@
+## robstride_ros2 (kilted) - 0.3.0-1
+
+The packages in the `robstride_ros2` repository were released into the `kilted` distro by running `/tmp/robstride-release-0.3.0.r0jjvV/venv/bin/bloom-release robstride_ros2 --ros-distro kilted --track kilted --non-interactive --no-pull-request --no-web` on `Wed, 04 Nov 2026 12:05:45 -0000`
+
+These packages were released:
+- `robstride_driver`
+- `robstride_examples`
+- `robstride_ros2`
+- `robstride_ros2_control`
+
+Version of package(s) in repository `robstride_ros2`:
+
+- upstream repository: https://github.com/s2015-turtle/robstride_ros2.git
+- release repository: https://github.com/ros2-gbp/robstride_ros2-release.git
+- rosdistro version: `0.2.0-1`
+- old version: `0.2.0-1`
+- new version: `0.3.0-1`
+
+Versions of tools used:
+
+- bloom version: `0.14.4`
+- catkin_pkg version: `1.1.1`
+- rosdep version: `0.27.0`
+- rosdistro version: `1.1.0`
+- vcstools version: `0.1.42`
+
+
 ## robstride_ros2 (jazzy) - 0.3.0-1
 
 The packages in the `robstride_ros2` repository were released into the `jazzy` distro by running `/tmp/robstride-release-0.3.0.r0jjvV/venv/bin/bloom-release robstride_ros2 --ros-distro jazzy --track jazzy --non-interactive --no-pull-request --no-web` on `Wed, 04 Nov 2026 12:01:57 -0000`
