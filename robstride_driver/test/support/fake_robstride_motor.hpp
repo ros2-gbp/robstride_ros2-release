@@ -3,6 +3,9 @@
 #include <chrono>
 #include <cstdint>
 #include <memory>
+#include <optional>
+
+#include "robstride_driver/protocol.hpp"
 
 namespace robstride_driver::test
 {
@@ -23,17 +26,23 @@ public:
   FakeRobStrideMotor(const FakeRobStrideMotor &) = delete;
   FakeRobStrideMotor & operator=(const FakeRobStrideMotor &) = delete;
 
+  // Drop host frames for this motor only; other IDs on the bus are unaffected.
+  void set_commands_enabled(bool enabled);
   void set_feedback_enabled(bool enabled);
   void set_parameter_confirmation_enabled(bool enabled);
   void set_stop_confirmation_enabled(bool enabled);
   void set_response_delay(std::chrono::milliseconds delay);
   void report_reset();
+  void report_position(double motor_position, const Limits & limits);
 
   uint8_t mode() const;
   uint64_t enable_count() const;
   uint64_t motion_count() const;
   uint64_t stop_count() const;
+  uint64_t watchdog_reset_count() const;
+  void check_worker() const;
   uint32_t parameter(uint16_t index) const;
+  std::optional<Frame> last_motion_frame() const;
 
 private:
   struct Impl;
