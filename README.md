@@ -24,6 +24,18 @@ repository. A Japanese README is available as
 - A nonzero motor-side CAN watchdog configured on every activation
 - CAN traffic, command-coalescing, and per-motor feedback diagnostics
 
+## Upgrading from 0.2.x to 0.3.0
+
+Out-of-range commands now fail the complete multi-joint command batch instead
+of being clamped. Correct the command and reactivate the hardware/controller;
+position activation also requires fresh feedback within the operational limits.
+
+The example now enables `set_zero_on_activate`, redefining mechanical zero at
+each hardware activation. The driver's default remains `false`. Review this
+setting before using the example on a robot with an existing calibrated reference.
+The plugin identifier and automatic Run-mode recovery policy are unchanged.
+See the [changelog](CHANGELOG.rst) for the full changes and remaining limitations.
+
 ## Package structure
 
 The repository contains four ROS 2 packages:
@@ -153,7 +165,7 @@ description.
 | `host_can_id` | `253` | Host CAN ID in the range `0..255` |
 | `can_tx_topic` | `to_can_bus` | Outgoing `can_msgs/msg/Frame` topic |
 | `can_rx_topic` | `from_can_bus` | Incoming `can_msgs/msg/Frame` topic |
-| `can_rx_qos_depth` | `32` | Reliable, volatile feedback QoS depth; increase for large motor groups |
+| `can_rx_qos_depth` | `32` | Reliable, volatile feedback QoS depth (`1`–`4096`); increase for large motor groups |
 | `feedback_timeout_ms` | `3000` | Maximum time without motor feedback before returning ERROR |
 | `fail_on_feedback_timeout` | `true` | Stop the hardware when feedback times out |
 | `transmit_failure_timeout_ms` | `1000` | Grace period before a missing transmit endpoint or stalled sender returns ERROR |
@@ -199,7 +211,7 @@ Each `<joint>` requires its own motor settings.
 | `model` | custom | Known model name or `custom` (explicit numeric limits) |
 | `position_min/max` | required for custom | CAN encoding range in radians |
 | `velocity_min/max` | required for custom | CAN encoding range in rad/s |
-| `effort_min/max` | required for custom | Motor-side effort clamp in Nm |
+| `effort_min/max` | required for custom | Motor-side effort command limits in Nm |
 | `effort_wire_min/max` | effort limits | Motor-side CAN encoding range in Nm |
 | `kp_max` / `kd_max` | required for custom | Gain encoding limits |
 | `kp` / `kd` | required | Gains used for position and velocity command interfaces |
@@ -220,11 +232,39 @@ ROS joint effort divided by `gear_ratio`, and ROS joint feedback effort is motor
 feedback effort multiplied by `gear_ratio`. `direction` is applied to both
 directions of the conversion. Transmission efficiency is not modeled.
 
+Numeric parameters must contain a complete, finite value; trailing text and
+embedded whitespace are rejected. Surrounding whitespace and a leading `+` are
+accepted. Integer parameters reject a minus sign, including `-0`. CAN IDs and
+`can_timeout_ticks` retain decimal, `0x` hexadecimal, and leading-zero octal
+notation; other integer parameters are decimal. Timeouts and retry counts are
+limited to `2147483647`; only the shutdown interval and shutdown confirmation
+timeout permit zero. `can_timeout_ticks` must be `1`–`4294967295`.
+
 The optional `command_*` limits let a robot use a narrower operating envelope
 without changing the motor model's CAN encoding ranges. They are expressed in
 ROS joint coordinates. Configuration fails if a limit is non-finite, reversed,
 or falls outside the corresponding CAN range after applying `direction`,
 `gear_ratio`, and `position_offset`.
+Velocity and effort ranges (both operational limits and CAN ranges) must include
+zero so neutral commands remain within the configured limits.
+Zero may be either boundary. Position ranges do not have this requirement.
+
+Position control activation requires recent, finite position feedback inside
+`command_position_min/max`. This is checked both when preparing and when applying
+the mode switch; a rejected switch leaves the previous mode unchanged. The
+initial position target is the latest measured position, not a limit boundary.
+The feedback must be newer than `feedback_timeout_ms` even if
+`fail_on_feedback_timeout` is disabled. Position transforms use the same strict
+joint-coordinate boundary checks during configuration, mode activation and
+command submission. A forward-transform boundary overshoot may be snapped to
+the motor endpoint only within eight adjacent `double` values; transforms that
+need a larger correction or collapse the joint range are rejected. This does
+not widen operational command limits or accept an adjacent outside joint value.
+Once active, a position, velocity, or effort command outside its `command_*`
+range (or the transformed motor range) is rejected, never clamped. The entire
+multi-joint CAN command batch is withheld, queued motion commands are cleared,
+and `write()` returns an error to ros2_control. Correct the command and
+reactivate the hardware/controller; do not rely on a clipped target.
 
 Every joint must export all three command interfaces and the three required
 state interfaces. `temperature` and `fault` are optional state interfaces:
@@ -350,6 +390,25 @@ Diagnostic levels have the following meaning:
 | `WARN` | No feedback yet, Run-mode recovery is active, or an active motor is outside Run mode | Endpoint loss is still within its grace period, or hardware is inactive |
 | `ERROR` | Feedback is stale or a motor fault flag is set | A persistent transport failure affects active hardware |
 
+Exceptions from receive callbacks, diagnostic providers/publication, and executor
+work are contained at the transport thread boundary. A failure latches
+`executor failed` health, disables active commands, wakes transaction waiters,
+and makes active hardware reads and writes return `ERROR`. A one-shot transport
+`ERROR` diagnostic is attempted without invoking the metrics provider; if ROS
+publication is unavailable, health remains latched and stderr reports the failure.
+Expected ROS context shutdown reports `ROS context shutdown` health and stops
+transport service without reporting an executor exception (active hardware still
+returns `ERROR` because service is unavailable). Transmit-thread exceptions likewise stop service, including
+failures during worker setup before its first publication.
+
+Lifecycle start/stop must be called serially by the owning thread, never from a
+transport callback. Stop joins both threads before releasing ROS resources;
+restart reaps any failed run before creating new threads. The executor uses a
+finite idle wait rather than depending on cancellation during ROS shutdown.
+This does not bound a callback or publisher that blocks indefinitely: stop still
+waits for in-flight work, and no thread is detached. Transport failure cannot
+guarantee that motor stop commands reach the CAN bridge.
+
 The six fault flags in the normal motor feedback are decoded as undervoltage,
 overcurrent, over-temperature, encoder fault, stall overload, and encoder
 uncalibrated. The `fault_flags_raw` field remains available for firmware-level
@@ -423,8 +482,29 @@ CI additionally exercises both directions of the topic transport through
 `ros2_socketcan` and a Linux `vcan` interface. A simulated RobStride motor on
 that bus verifies startup parameter confirmation, enable and motion feedback,
 automatic Run-mode recovery, feedback timeout handling, and shutdown when stop
-confirmation is missing. These tests do not replace hardware-in-the-loop
-testing of timing or physical motor behavior.
+confirmation is missing. The fake keeps explicitly injected measured position
+separate from captured commands: it does not model motion or teleport the shaft
+when a zero-gain startup command arrives. Tests include startup outside operational
+position limits and successful command activation after measured position returns
+inside those limits.
+
+The fake simulates the configured CAN watchdog using a monotonic clock and
+50-microsecond ticks (20,000 ticks/second). Enable starts the deadline; addressed
+motion commands refresh it. Parameter reads and traffic addressed to other motor
+IDs do not. Expiry changes the fake to Reset and emits feedback if enabled.
+Two-motor scenarios independently drop one motor's commands or feedback, verify
+per-ID recovery routing, and check both settings of `fail_on_feedback_timeout`.
+Polling has bounded deadlines; driver and worker-thread cleanup is RAII-managed,
+including failed assertions. These software simulations are not hardware-in-the-loop
+tests, a firmware-conformance claim, or evidence of physical safety. Real watchdog
+timing, bus failures, motor dynamics, and safe mechanical behavior require hardware
+validation.
+
+Jazzy and Rolling CI also load the installed hardware plugin in a real
+controller_manager and exercise forward command controllers through vcan.
+These tests check position, velocity and effort commands at the fake motor,
+independent feedback on `/joint_states`, mode switching, and hardware
+deactivation/reactivation. See the [integration test instructions](robstride_examples/test/integration/README.md).
 
 ## License
 
