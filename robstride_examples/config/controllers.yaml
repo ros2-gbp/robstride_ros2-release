@@ -1,0 +1,29 @@
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+    robstride_position_controller:
+      type: forward_command_controller/ForwardCommandController
+    robstride_velocity_controller:
+      type: forward_command_controller/ForwardCommandController
+    robstride_effort_controller:
+      type: forward_command_controller/ForwardCommandController
+
+robstride_position_controller:
+  ros__parameters:
+    joints:
+      - robstride_joint
+    interface_name: position
+
+robstride_velocity_controller:
+  ros__parameters:
+    joints:
+      - robstride_joint
+    interface_name: velocity
+
+robstride_effort_controller:
+  ros__parameters:
+    joints:
+      - robstride_joint
+    interface_name: effort
